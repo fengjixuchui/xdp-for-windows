@@ -103,7 +103,7 @@ FnLwfRxGetFrame(
     Result =
         FnLwfIoctl(
             Handle, IOCTL_RX_GET_FRAME, &In, sizeof(In), Frame, *FrameBufferLength,
-            (ULONG *)FrameBufferLength, NULL);
+            FrameBufferLength, NULL);
 
     if (SUCCEEDED(Result) && Frame != NULL) {
         //
@@ -204,4 +204,16 @@ FnLwfStatusGetIndication(
         FnLwfIoctl(
             Handle, IOCTL_STATUS_GET_INDICATION, NULL, 0, StatusBuffer, *StatusBufferLength,
             StatusBufferLength, NULL);
+}
+
+HRESULT
+FnLwfDatapathGetState(
+    _In_ HANDLE Handle,
+    BOOLEAN *IsDatapathActive
+    )
+{
+    return
+        FnLwfIoctl(
+            Handle, IOCTL_DATAPATH_GET_STATE, NULL, 0, IsDatapathActive, sizeof(*IsDatapathActive),
+            NULL, NULL);
 }

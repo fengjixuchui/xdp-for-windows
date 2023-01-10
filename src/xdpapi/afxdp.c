@@ -7,7 +7,6 @@
 #include <assert.h>
 
 HRESULT
-XDPAPI
 XskCreate(
     _Out_ HANDLE* socket
     )
@@ -33,7 +32,6 @@ XskCreate(
 }
 
 HRESULT
-XDPAPI
 XskBind(
     _In_ HANDLE socket,
     _In_ UINT32 ifIndex,
@@ -67,7 +65,6 @@ XskBind(
 }
 
 HRESULT
-XDPAPI
 XskActivate(
     _In_ HANDLE socket,
     _In_ XSK_ACTIVATE_FLAGS flags
@@ -97,7 +94,6 @@ XskActivate(
 }
 
 HRESULT
-XDPAPI
 XskSetSockopt(
     _In_ HANDLE socket,
     _In_ UINT32 optionName,
@@ -131,7 +127,6 @@ XskSetSockopt(
 }
 
 HRESULT
-XDPAPI
 XskGetSockopt(
     _In_ HANDLE socket,
     _In_ UINT32 optionName,
@@ -163,7 +158,6 @@ XskGetSockopt(
 }
 
 HRESULT
-XDPAPI
 XskIoctl(
     _In_ HANDLE socket,
     _In_ UINT32 optionName,
@@ -184,7 +178,6 @@ XskIoctl(
 }
 
 HRESULT
-XDPAPI
 XskNotifySocket(
     _In_ HANDLE socket,
     _In_ XSK_NOTIFY_FLAGS flags,
@@ -215,6 +208,55 @@ XskNotifySocket(
     }
 
     *result = bytesReturned;
+
+    return S_OK;
+}
+
+HRESULT
+XskNotifyAsync(
+    _In_ HANDLE socket,
+    _In_ XSK_NOTIFY_FLAGS flags,
+    _Inout_ OVERLAPPED *overlapped
+    )
+{
+    BOOL res;
+    DWORD bytesReturned;
+    XSK_NOTIFY_IN notify = {0};
+
+    notify.Flags = flags;
+    notify.WaitTimeoutMilliseconds = INFINITE;
+
+    res =
+        XdpIoctl(
+            socket,
+            IOCTL_XSK_NOTIFY_ASYNC,
+            &notify,
+            sizeof(notify),
+            NULL,
+            0,
+            &bytesReturned,
+            overlapped,
+            TRUE);
+    if (res == 0) {
+        return HRESULT_FROM_WIN32(GetLastError());
+    }
+
+    return S_OK;
+}
+
+HRESULT
+XskGetNotifyAsyncResult(
+    _In_ OVERLAPPED *overlapped,
+    _Out_ XSK_NOTIFY_RESULT_FLAGS *result
+    )
+{
+    IO_STATUS_BLOCK *Iosb = (IO_STATUS_BLOCK *)&overlapped->Internal;
+
+    if (!NT_SUCCESS(Iosb->Status)) {
+        return HRESULT_FROM_WIN32(RtlNtStatusToDosError(Iosb->Status));
+    }
+
+    *result = (XSK_NOTIFY_RESULT_FLAGS)Iosb->Information;
 
     return S_OK;
 }

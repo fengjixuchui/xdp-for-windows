@@ -26,6 +26,8 @@ typedef struct _INTERFACE_CONFIG_ENTRY {
 
 INTERFACE_CONFIG_ENTRY *InterfaceConfigList = NULL;
 
+CONST XDP_API_TABLE *XdpApi;
+
 CONST CHAR *UsageText =
 "Usage:"
 "\n    get <ifIndex>"
@@ -122,7 +124,7 @@ AddInterfaceConfig(
 
     RtlZeroMemory(InterfaceConfig, sizeof(*InterfaceConfig));
 
-    Result = XdpInterfaceOpen(IfIndex, &InterfaceConfig->InterfaceHandle);
+    Result = XdpApi->XdpInterfaceOpen(IfIndex, &InterfaceConfig->InterfaceHandle);
     if (FAILED(Result)) {
         printf("Error: Failed to open RSS handle on IfIndex=%u Result=%d\n", IfIndex, Result);
         goto Exit;
@@ -146,13 +148,15 @@ Exit:
 
 BOOLEAN
 GetIfIndexParam(
-    _In_ CHAR *Str,
+    _In_ CHAR **StrTokContext,
     _Out_ UINT32 *IfIndex
     )
 {
+    CHAR *Str;
+
     *IfIndex = 0;
 
-    Str = strtok(NULL, " \n");
+    Str = strtok_s(NULL, " \n", StrTokContext);
     if (Str == NULL) {
         printf("Error: could not parse IfIndex\n");
         return FALSE;
@@ -169,7 +173,7 @@ GetIfIndexParam(
 
 VOID
 ProcessCommandGet(
-    _In_ CHAR *Str
+    _In_ CHAR **StrTokContext
     )
 {
     HRESULT Result;
@@ -180,18 +184,18 @@ ProcessCommandGet(
     UCHAR *HashSecretKey;
     PROCESSOR_NUMBER *IndirectionTable;
 
-    if (!GetIfIndexParam(Str, &IfIndex)) {
+    if (!GetIfIndexParam(StrTokContext, &IfIndex)) {
         goto Exit;
     }
 
-    Result = XdpInterfaceOpen(IfIndex, &InterfaceHandle);
+    Result = XdpApi->XdpInterfaceOpen(IfIndex, &InterfaceHandle);
     if (FAILED(Result)) {
         printf("Error: Failed to open RSS handle on IfIndex=%u Result=%d\n", IfIndex, Result);
         goto Exit;
     }
 
     RssConfigSize = 0;
-    Result = XdpRssGet(InterfaceHandle, RssConfig, &RssConfigSize);
+    Result = XdpApi->XdpRssGet(InterfaceHandle, RssConfig, &RssConfigSize);
     if (SUCCEEDED(Result) || RssConfigSize < sizeof(RssConfig)) {
         printf(
             "Error: Failed to get RSS configuration size on IfIndex=%u Result=%d RssConfigSize=%d\n",
@@ -206,7 +210,7 @@ ProcessCommandGet(
     }
 
     _Analysis_assume_(RssConfigSize >= sizeof(*RssConfig));
-    Result = XdpRssGet(InterfaceHandle, RssConfig, &RssConfigSize);
+    Result = XdpApi->XdpRssGet(InterfaceHandle, RssConfig, &RssConfigSize);
     if (FAILED(Result)) {
         printf("Error: Failed to get RSS configuration on IfIndex=%u Result=%d\n", IfIndex, Result);
         goto Exit;
@@ -240,7 +244,7 @@ Exit:
 
 VOID
 ProcessCommandSet(
-    _In_ CHAR *Str
+    _In_ CHAR **StrTokContext
     )
 {
     HRESULT Result;
@@ -251,8 +255,9 @@ ProcessCommandSet(
     UINT32 ProcessorArraySize = 0;
     BOOLEAN AddedEntry = FALSE;
     BOOLEAN Success = FALSE;
+    CHAR *Str;
 
-    if (!GetIfIndexParam(Str, &IfIndex)) {
+    if (!GetIfIndexParam(StrTokContext, &IfIndex)) {
         goto Exit;
     }
 
@@ -279,19 +284,19 @@ ProcessCommandSet(
     RssConfig->IndirectionTableOffset = sizeof(*RssConfig);
 
     PROCESSOR_NUMBER *IndirectionTable = RTL_PTR_ADD(RssConfig, RssConfig->IndirectionTableOffset);
-    while ((Str = strtok(NULL, " ,\n")) != NULL) {
+    while ((Str = strtok_s(NULL, " ,\n", StrTokContext)) != NULL) {
         if (ProcessorArraySize == XDP_RSS_INDIRECTION_TABLE_SIZE) {
             printf("Error: Exceeded number of processor array entries\n");
             goto Exit;
         }
 
-        IndirectionTable[ProcessorArraySize++].Number = atoi(Str);
+        IndirectionTable[ProcessorArraySize++].Number = (BYTE)atoi(Str);
     }
 
     RssConfig->IndirectionTableSize = (USHORT)(ProcessorArraySize * sizeof(PROCESSOR_NUMBER));
     RssConfig->Flags = XDP_RSS_FLAG_SET_INDIRECTION_TABLE;
 
-    Result = XdpRssSet(InterfaceConfig->InterfaceHandle, RssConfig, RssConfigSize);
+    Result = XdpApi->XdpRssSet(InterfaceConfig->InterfaceHandle, RssConfig, RssConfigSize);
     if (FAILED(Result)) {
         printf("Error: Failed to set RSS configuration on IfIndex=%u Result=%d\n", IfIndex, Result);
         goto Exit;
@@ -314,12 +319,12 @@ Exit:
 
 VOID
 ProcessCommandClear(
-    _In_ CHAR *Str
+    _In_ CHAR **StrTokContext
     )
 {
     UINT32 IfIndex;
 
-    if (!GetIfIndexParam(Str, &IfIndex)) {
+    if (!GetIfIndexParam(StrTokContext, &IfIndex)) {
         goto Exit;
     }
 
@@ -336,8 +341,16 @@ INT
 __cdecl
 main()
 {
+    HRESULT Result = S_OK;
     CHAR Buffer[1024];
     CHAR *Str;
+    CHAR *StrTokContext = NULL;
+
+    Result = XdpOpenApi(XDP_VERSION_PRERELEASE, &XdpApi);
+    if (FAILED(Result)) {
+        printf("Error: Failed to load XDP API Result=%d\n", Result);
+        goto Exit;
+    }
 
     while (TRUE) {
         printf(">> ");
@@ -345,14 +358,14 @@ main()
             goto Exit;
         }
 
-        Str = strtok(Buffer, " \n");
+        Str = strtok_s(Buffer, " \n", &StrTokContext);
 
         if (!strcmp(Str, "get")) {
-            ProcessCommandGet(Str);
+            ProcessCommandGet(&StrTokContext);
         } else if (!strcmp(Str, "set")) {
-            ProcessCommandSet(Str);
+            ProcessCommandSet(&StrTokContext);
         } else if (!strcmp(Str, "clear")) {
-            ProcessCommandClear(Str);
+            ProcessCommandClear(&StrTokContext);
         } else {
             Usage("invalid command");
         }
@@ -360,5 +373,9 @@ main()
 
 Exit:
 
-    return 0;
+    if (XdpApi != NULL) {
+        XdpCloseApi(XdpApi);
+    }
+
+    return FAILED(Result);
 }

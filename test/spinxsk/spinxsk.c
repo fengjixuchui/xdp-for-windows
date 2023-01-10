@@ -12,6 +12,7 @@
 #include <afxdp_experimental.h>
 #include <xdpapi.h>
 #include <xdpapi_internal.h>
+#include <xdprtl.h>
 
 #include "trace.h"
 #include "util.h"
@@ -184,6 +185,7 @@ typedef struct {
 struct QUEUE_CONTEXT {
     UINT32 queueId;
 
+    CONST XDP_API_TABLE *xdpApi;
     HANDLE sock;
     HANDLE sharedUmemSock;
     HANDLE rss;
@@ -384,7 +386,7 @@ AttachXdpProgram(
         flags |= XDP_CREATE_PROGRAM_FLAG_SHARE;
     }
 
-    res = XskGetSockopt(Sock, XSK_SOCKOPT_RX_HOOK_ID, &hookId, &hookIdSize);
+    res = Queue->xdpApi->XskGetSockopt(Sock, XSK_SOCKOPT_RX_HOOK_ID, &hookId, &hookIdSize);
     if (FAILED(res)) {
         goto Exit;
     }
@@ -414,7 +416,9 @@ AttachXdpProgram(
         }
     }
 
-    res = XdpCreateProgram(ifindex, &hookId, Queue->queueId, flags, &rule, 1, &handle);
+    res =
+        Queue->xdpApi->XdpCreateProgram(
+            ifindex, &hookId, Queue->queueId, flags, &rule, 1, &handle);
     if (SUCCEEDED(res)) {
         EnterCriticalSection(&RxProgramSet->Lock);
         if (RxProgramSet->HandleCount < RTL_NUMBER_OF(RxProgramSet->Handles)) {
@@ -540,6 +544,10 @@ CleanupQueue(
         ASSERT_FRE(res);
     }
 
+    if (Queue->xdpApi != NULL) {
+        XdpCloseApi(Queue->xdpApi);
+    }
+
     DeleteCriticalSection(&Queue->sharedUmemRxProgramSet.Lock);
     DeleteCriticalSection(&Queue->rxProgramSet.Lock);
 
@@ -553,28 +561,28 @@ FuzzRssSet(
     )
 {
     XDP_RSS_CONFIGURATION* RssConfiguration = NULL;
-    DWORD* ProcessorGroups = NULL;
+    UINT8 *ProcessorGroups = NULL;
 
     WORD ActiveProcGroups = GetActiveProcessorGroupCount();
     if (ActiveProcGroups == 0) {
         goto Exit;
     }
 
-    ProcessorGroups = malloc(sizeof(DWORD) * ActiveProcGroups);
+    ProcessorGroups = malloc(sizeof(UINT8) * ActiveProcGroups);
     if (ProcessorGroups == NULL) {
         goto Exit;
     }
 
     DWORD ActualNumProcessors = 0;
-    for (DWORD i = 0; i < ActiveProcGroups; i++) {
-        DWORD NumProcsInGroup = GetActiveProcessorCount(i);
+    for (WORD i = 0; i < ActiveProcGroups; i++) {
+        UINT8 NumProcsInGroup = (UINT8)GetActiveProcessorCount(i);
         ProcessorGroups[i] = NumProcsInGroup;
         ActualNumProcessors += NumProcsInGroup;
     }
 
     UINT32 NumProcessors = (RandUlong() % ActualNumProcessors) + 1;
 
-    UINT32 HashSecretKeySize = RandUlong() % 41;
+    UINT16 HashSecretKeySize = RandUlong() % 41;
     UINT32 IndirectionTableSize = NumProcessors * sizeof(PROCESSOR_NUMBER);
     UINT32 RssConfigSize =
         sizeof(XDP_RSS_CONFIGURATION) +
@@ -588,16 +596,16 @@ FuzzRssSet(
     RtlZeroMemory(RssConfiguration, RssConfigSize);
     RssConfiguration->Header.Revision = XDP_RSS_CONFIGURATION_REVISION_1;
     RssConfiguration->Header.Size = XDP_SIZEOF_RSS_CONFIGURATION_REVISION_1;
-    RssConfiguration->HashSecretKeyOffset = (RandUlong() % 64 == 0) ? RandUlong() : sizeof(XDP_RSS_CONFIGURATION);
-    UINT32 ActualIndirectionTableOffset =  sizeof(XDP_RSS_CONFIGURATION) + HashSecretKeySize;
-    RssConfiguration->IndirectionTableOffset = (RandUlong() % 64 == 0) ? RandUlong() : ActualIndirectionTableOffset;
+    RssConfiguration->HashSecretKeyOffset = (RandUlong() % 64 == 0) ? (UINT16)RandUlong() : sizeof(XDP_RSS_CONFIGURATION);
+    UINT16 ActualIndirectionTableOffset =  sizeof(XDP_RSS_CONFIGURATION) + HashSecretKeySize;
+    RssConfiguration->IndirectionTableOffset = (RandUlong() % 64 == 0) ? (UINT16)RandUlong() : ActualIndirectionTableOffset;
 
     PROCESSOR_NUMBER *IndirectionTableDst =
         (PROCESSOR_NUMBER *)RTL_PTR_ADD(RssConfiguration, ActualIndirectionTableOffset);
 
     for (UINT32 ProcNumIndex = 0; ProcNumIndex < NumProcessors; ProcNumIndex++) {
-        UINT32 SelectedGroup = RandUlong() % ActiveProcGroups;
-        UINT32 SelectedProcNumber = RandUlong() % ProcessorGroups[SelectedGroup];
+        UINT16 SelectedGroup = RandUlong() % ActiveProcGroups;
+        UINT8 SelectedProcNumber = RandUlong() % ProcessorGroups[SelectedGroup];
 
         IndirectionTableDst[ProcNumIndex].Group = SelectedGroup;
         IndirectionTableDst[ProcNumIndex].Number = SelectedProcNumber;
@@ -607,8 +615,8 @@ FuzzRssSet(
         XDP_RSS_FLAG_SET_HASH_TYPE | XDP_RSS_FLAG_SET_HASH_SECRET_KEY |
         XDP_RSS_FLAG_SET_INDIRECTION_TABLE;
     RssConfiguration->HashType = (RandUlong() % 64 == 0) ? RandUlong() : XDP_RSS_VALID_HASH_TYPES;
-    RssConfiguration->HashSecretKeySize = (RandUlong() % 64 == 0) ? RandUlong() : HashSecretKeySize;
-    RssConfiguration->IndirectionTableSize = (RandUlong() % 64 == 0) ? RandUlong() : (USHORT)IndirectionTableSize;
+    RssConfiguration->HashSecretKeySize = (RandUlong() % 64 == 0) ? (UINT16)RandUlong() : HashSecretKeySize;
+    RssConfiguration->IndirectionTableSize = (RandUlong() % 64 == 0) ? (UINT16)RandUlong() : (USHORT)IndirectionTableSize;
 
     //
     // It's OK if XdpRssSet fails, as spin is to make sure random inputs don't
@@ -616,11 +624,11 @@ FuzzRssSet(
     //
 
     if (fuzzer->fuzzerInterface != NULL) {
-        (void)XdpRssSet(fuzzer->fuzzerInterface, RssConfiguration, RssConfigSize);
+        (void)queue->xdpApi->XdpRssSet(fuzzer->fuzzerInterface, RssConfiguration, RssConfigSize);
     } else {
         AcquireSRWLockShared(&queue->rssLock);
         if (queue->rss != NULL) {
-            (void)XdpRssSet(queue->rss, RssConfiguration, RssConfigSize);
+            (void)queue->xdpApi->XdpRssSet(queue->rss, RssConfiguration, RssConfigSize);
         }
         ReleaseSRWLockShared(&queue->rssLock);
     }
@@ -646,11 +654,11 @@ FuzzRssGet(
     UINT32 size = 0;
 
     if (Fuzzer->fuzzerInterface != NULL) {
-        res = XdpRssGet(Fuzzer->fuzzerInterface, NULL, &size);
+        res = Queue->xdpApi->XdpRssGet(Fuzzer->fuzzerInterface, NULL, &size);
     } else {
         AcquireSRWLockShared(&Queue->rssLock);
         if (Queue->rss != NULL) {
-            res = XdpRssGet(Queue->rss, NULL, &size);
+            res = Queue->xdpApi->XdpRssGet(Queue->rss, NULL, &size);
         } else {
             res = E_INVALIDARG;
         }
@@ -670,12 +678,12 @@ FuzzRssGet(
 
     if (Fuzzer->fuzzerInterface != NULL) {
 #pragma prefast(suppress : 6386, "SAL does not understand the mod operator")
-        XdpRssGet(Fuzzer->fuzzerInterface, rssConfiguration, &size);
+        Queue->xdpApi->XdpRssGet(Fuzzer->fuzzerInterface, rssConfiguration, &size);
     } else {
         AcquireSRWLockShared(&Queue->rssLock);
         if (Queue->rss != NULL) {
 #pragma prefast(suppress : 6386, "SAL does not understand the mod operator")
-            XdpRssGet(Queue->rss, rssConfiguration, &size);
+            Queue->xdpApi->XdpRssGet(Queue->rss, rssConfiguration, &size);
         }
         ReleaseSRWLockShared(&Queue->rssLock);
     }
@@ -698,11 +706,11 @@ FuzzRssGetCapabilities(
     UINT32 size = 0;
 
     if (Fuzzer->fuzzerInterface != NULL) {
-        res = XdpRssGetCapabilities(Fuzzer->fuzzerInterface, NULL, &size);
+        res = Queue->xdpApi->XdpRssGetCapabilities(Fuzzer->fuzzerInterface, NULL, &size);
     } else {
         AcquireSRWLockShared(&Queue->rssLock);
         if (Queue->rss != NULL) {
-            res = XdpRssGetCapabilities(Queue->rss, NULL, &size);
+            res = Queue->xdpApi->XdpRssGetCapabilities(Queue->rss, NULL, &size);
         } else {
             res = E_INVALIDARG;
         }
@@ -722,12 +730,12 @@ FuzzRssGetCapabilities(
 
     if (Fuzzer->fuzzerInterface != NULL) {
 #pragma prefast(suppress : 6386, "SAL does not understand the mod operator")
-        XdpRssGetCapabilities(Fuzzer->fuzzerInterface, rssCapabilities, &size);
+        Queue->xdpApi->XdpRssGetCapabilities(Fuzzer->fuzzerInterface, rssCapabilities, &size);
     } else {
         AcquireSRWLockShared(&Queue->rssLock);
         if (Queue->rss != NULL) {
 #pragma prefast(suppress : 6386, "SAL does not understand the mod operator")
-            XdpRssGetCapabilities(Queue->rss, rssCapabilities, &size);
+            Queue->xdpApi->XdpRssGetCapabilities(Queue->rss, rssCapabilities, &size);
         }
         ReleaseSRWLockShared(&Queue->rssLock);
     }
@@ -774,7 +782,7 @@ FuzzRss(
             fuzzer->fuzzerInterface = NULL;
         }
 
-        XdpInterfaceOpen(ifindex, &fuzzer->fuzzerInterface);
+        queue->xdpApi->XdpInterfaceOpen(ifindex, &fuzzer->fuzzerInterface);
     }
 
     if (RandUlong() % 25 == 0) {
@@ -820,6 +828,11 @@ InitializeQueue(
     InitializeCriticalSection(&queue->rxProgramSet.Lock);
     InitializeCriticalSection(&queue->sharedUmemRxProgramSet.Lock);
     InitializeSRWLock(&queue->rssLock);
+
+    res = XdpOpenApi(XDP_VERSION_PRERELEASE, &queue->xdpApi);
+    if (FAILED(res)) {
+        goto Exit;
+    }
 
     queue->fuzzers = calloc(queue->fuzzerCount, sizeof(*queue->fuzzers));
     if (queue->fuzzers == NULL) {
@@ -873,13 +886,13 @@ InitializeQueue(
         queue->scenarioConfig.sharedUmemSockTx = TRUE;
     }
 
-    res = XskCreate(&queue->sock);
+    res = queue->xdpApi->XskCreate(&queue->sock);
     if (FAILED(res)) {
         goto Exit;
     }
 
     if (queue->scenarioConfig.sharedUmemSockRx || queue->scenarioConfig.sharedUmemSockTx) {
-        res = XskCreate(&queue->sharedUmemSock);
+        res = queue->xdpApi->XskCreate(&queue->sharedUmemSock);
         if (FAILED(res)) {
             goto Exit;
         }
@@ -976,7 +989,7 @@ FuzzSocketUmemSetup(
         }
 
         res =
-            XskSetSockopt(
+            Queue->xdpApi->XskSetSockopt(
                 Sock, XSK_SOCKOPT_UMEM_REG, &umemReg, sizeof(umemReg));
         if (SUCCEEDED(res)) {
             Queue->umemReg = umemReg;
@@ -1010,7 +1023,7 @@ FuzzSocketSharedUmemSetup(
         }
 
         res =
-            XskSetSockopt(
+            Queue->xdpApi->XskSetSockopt(
                 Sock, XSK_SOCKOPT_SHARE_UMEM, &SharedUmemSock, sizeof(SharedUmemSock));
         if (SUCCEEDED(res)) {
             TraceVerbose(
@@ -1057,7 +1070,7 @@ FuzzSocketRxTxSetup(
         if (RandUlong() % 2) {
             FuzzRingSize(Queue, &ringSize);
             res =
-                XskSetSockopt(
+                Queue->xdpApi->XskSetSockopt(
                     Sock, XSK_SOCKOPT_RX_RING_SIZE, &ringSize, sizeof(ringSize));
             if (SUCCEEDED(res)) {
                 WriteBooleanRelease(WasRxSet, TRUE);
@@ -1069,7 +1082,7 @@ FuzzSocketRxTxSetup(
         if (RandUlong() % 2) {
             FuzzRingSize(Queue, &ringSize);
             res =
-                XskSetSockopt(
+                Queue->xdpApi->XskSetSockopt(
                     Sock, XSK_SOCKOPT_TX_RING_SIZE, &ringSize, sizeof(ringSize));
             if (SUCCEEDED(res)) {
                 WriteBooleanRelease(WasTxSet, TRUE);
@@ -1080,14 +1093,14 @@ FuzzSocketRxTxSetup(
     if (RandUlong() % 2) {
         FuzzRingSize(Queue, &ringSize);
         res =
-            XskSetSockopt(
+            Queue->xdpApi->XskSetSockopt(
                 Sock, XSK_SOCKOPT_RX_FILL_RING_SIZE, &ringSize, sizeof(ringSize));
     }
 
     if (RandUlong() % 2) {
         FuzzRingSize(Queue, &ringSize);
         res =
-            XskSetSockopt(
+            Queue->xdpApi->XskSetSockopt(
                 Sock, XSK_SOCKOPT_TX_COMPLETION_RING_SIZE, &ringSize, sizeof(ringSize));
     }
 }
@@ -1101,16 +1114,24 @@ FuzzSocketMisc(
 {
     UINT32 optSize;
 
+    //
+    // For simplicity, use a single shared overlapped structure for fuzzed IO.
+    // This overlapped structure will be used for several concurrent IOs, which
+    // is usually unadvisable, but since we do not care about the results of the
+    // IOs, this is fine.
+    //
+    static OVERLAPPED overlapped = {0};
+
     if (RandUlong() % 2) {
         XSK_RING_INFO_SET ringInfo;
         optSize = sizeof(ringInfo);
-        XskGetSockopt(Sock, XSK_SOCKOPT_RING_INFO, &ringInfo, &optSize);
+        Queue->xdpApi->XskGetSockopt(Sock, XSK_SOCKOPT_RING_INFO, &ringInfo, &optSize);
     }
 
     if (RandUlong() % 2) {
         XSK_STATISTICS stats;
         optSize = sizeof(stats);
-        XskGetSockopt(Sock, XSK_SOCKOPT_STATISTICS, &stats, &optSize);
+        Queue->xdpApi->XskGetSockopt(Sock, XSK_SOCKOPT_STATISTICS, &stats, &optSize);
     }
 
     if (RandUlong() % 2) {
@@ -1120,7 +1141,7 @@ FuzzSocketMisc(
             XDP_HOOK_INSPECT,
         };
         FuzzHookId(&hookId);
-        XskSetSockopt(Sock, XSK_SOCKOPT_RX_HOOK_ID, &hookId, sizeof(hookId));
+        Queue->xdpApi->XskSetSockopt(Sock, XSK_SOCKOPT_RX_HOOK_ID, &hookId, sizeof(hookId));
     }
 
     if (RandUlong() % 2) {
@@ -1130,7 +1151,7 @@ FuzzSocketMisc(
             XDP_HOOK_INJECT,
         };
         FuzzHookId(&hookId);
-        XskSetSockopt(Sock, XSK_SOCKOPT_TX_HOOK_ID, &hookId, sizeof(hookId));
+        Queue->xdpApi->XskSetSockopt(Sock, XSK_SOCKOPT_TX_HOOK_ID, &hookId, sizeof(hookId));
     }
 
     if (RandUlong() % 2) {
@@ -1155,7 +1176,15 @@ FuzzSocketMisc(
             timeoutMs = RandUlong() % 1000;
         }
 
-        XskNotifySocket(Sock, notifyFlags, timeoutMs, &notifyResult);
+        if (RandUlong() % 2) {
+            Queue->xdpApi->XskNotifySocket(Sock, notifyFlags, timeoutMs, &notifyResult);
+        } else {
+            Queue->xdpApi->XskNotifyAsync(Sock, notifyFlags, &overlapped);
+        }
+    }
+
+    if (!(RandUlong() % 8)) {
+        CancelIoEx(Sock, &overlapped);
     }
 
     if (RandUlong() % 2) {
@@ -1179,7 +1208,7 @@ FuzzSocketMisc(
         }
 
         #pragma prefast(suppress:6387) // Intentionally passing NULL parameter.
-        XskGetSockopt(Sock, option, procNumParam, &optSize);
+        Queue->xdpApi->XskGetSockopt(Sock, option, procNumParam, &optSize);
     }
 
     if (!cleanDatapath && !(RandUlong() % 3)) {
@@ -1227,7 +1256,7 @@ FuzzSocketBind(
             bindFlags |= 0x1 << (RandUlong() % 32);
         }
 
-        res = XskBind(Sock, ifindex, Queue->queueId, bindFlags);
+        res = Queue->xdpApi->XskBind(Sock, ifindex, Queue->queueId, bindFlags);
         if (SUCCEEDED(res)) {
             WriteBooleanRelease(WasSockBound, TRUE);
         }
@@ -1249,7 +1278,7 @@ FuzzSocketActivate(
             activateFlags = RandUlong() & RandUlong();
         }
 
-        res = XskActivate(Sock, activateFlags);
+        res = Queue->xdpApi->XskActivate(Sock, activateFlags);
         if (SUCCEEDED(res)) {
             WriteBooleanRelease(WasSockActivated, TRUE);
         }
@@ -1288,7 +1317,9 @@ InitializeDatapath(
     Datapath->flags.wait = FALSE;
     Datapath->txiosize = queue->umemReg.chunkSize - queue->umemReg.headroom;
 
-    res = XskGetSockopt(Datapath->sock, XSK_SOCKOPT_RING_INFO, &ringInfo, &ringInfoSize);
+    res =
+        queue->xdpApi->XskGetSockopt(
+            Datapath->sock, XSK_SOCKOPT_RING_INFO, &ringInfo, &ringInfoSize);
     if (FAILED(res)) {
         goto Exit;
     }
@@ -1374,7 +1405,8 @@ NotifyDriver(
     }
 
     if (DirectionFlags != 0) {
-        XskNotifySocket(Datapath->sock, DirectionFlags, WAIT_DRIVER_TIMEOUT_MS, &notifyResult);
+        Datapath->shared->queue->xdpApi->XskNotifySocket(
+            Datapath->sock, DirectionFlags, WAIT_DRIVER_TIMEOUT_MS, &notifyResult);
     }
 }
 
@@ -1528,7 +1560,9 @@ PrintDatapathStats(
     CHAR txPacketCount[64] = { 0 };
     HRESULT res;
 
-    res = XskGetSockopt(Datapath->sock, XSK_SOCKOPT_STATISTICS, &stats, &optSize);
+    res =
+        Datapath->shared->queue->xdpApi->XskGetSockopt(
+            Datapath->sock, XSK_SOCKOPT_STATISTICS, &stats, &optSize);
     if (FAILED(res)) {
         return;
     }
@@ -2052,7 +2086,7 @@ ParseArgs(
             if (++i > argc) {
                 Usage();
             }
-            successThresholdPercent = atoi(argv[i]);
+            successThresholdPercent = (UINT8)atoi(argv[i]);
             TraceVerbose("successThresholdPercent=%u", successThresholdPercent);
         } else {
             Usage();

@@ -5,8 +5,70 @@
 
 #include "precomp.h"
 
+XDP_OPEN_API_FN XdpOpenApi;
+XDP_CLOSE_API_FN XdpCloseApi;
+XDP_CREATE_PROGRAM_FN XdpCreateProgram;
+XDP_INTERFACE_OPEN_FN XdpInterfaceOpen;
+XDP_RSS_GET_CAPABILITIES_FN XdpRssGetCapabilities;
+XDP_RSS_SET_FN XdpRssSet;
+XDP_RSS_GET_FN XdpRssGet;
+XSK_CREATE_FN XskCreate;
+XSK_BIND_FN XskBind;
+XSK_ACTIVATE_FN XskActivate;
+XSK_NOTIFY_SOCKET_FN XskNotifySocket;
+XSK_NOTIFY_ASYNC_FN XskNotifyAsync;
+XSK_GET_NOTIFY_ASYNC_RESULT_FN XskGetNotifyAsyncResult;
+XSK_SET_SOCKOPT_FN XskSetSockopt;
+XSK_GET_SOCKOPT_FN XskGetSockopt;
+XSK_IOCTL_FN XskIoctl;
+
+static CONST XDP_API_TABLE XdpApiTablePrerelease = {
+    .XdpOpenApi = XdpOpenApi,
+    .XdpCloseApi = XdpCloseApi,
+    .XdpCreateProgram = XdpCreateProgram,
+    .XdpInterfaceOpen = XdpInterfaceOpen,
+    .XdpRssGetCapabilities = XdpRssGetCapabilities,
+    .XdpRssSet = XdpRssSet,
+    .XdpRssGet = XdpRssGet,
+    .XskCreate = XskCreate,
+    .XskBind = XskBind,
+    .XskActivate = XskActivate,
+    .XskNotifySocket = XskNotifySocket,
+    .XskNotifyAsync = XskNotifyAsync,
+    .XskGetNotifyAsyncResult = XskGetNotifyAsyncResult,
+    .XskSetSockopt = XskSetSockopt,
+    .XskGetSockopt = XskGetSockopt,
+    .XskIoctl = XskIoctl,
+};
+
 HRESULT
 XDPAPI
+XdpOpenApi(
+    _In_ UINT32 XdpApiVersion,
+    _Out_ CONST XDP_API_TABLE **XdpApiTable
+    )
+{
+    *XdpApiTable = NULL;
+
+    if (XdpApiVersion != XDP_VERSION_PRERELEASE) {
+        return E_NOINTERFACE;
+    }
+
+    *XdpApiTable = &XdpApiTablePrerelease;
+
+    return S_OK;
+}
+
+VOID
+XDPAPI
+XdpCloseApi(
+    _In_ CONST XDP_API_TABLE *XdpApiTable
+    )
+{
+    FRE_ASSERT(XdpApiTable == &XdpApiTablePrerelease);
+}
+
+HRESULT
 XdpCreateProgram(
     _In_ UINT32 InterfaceIndex,
     _In_ CONST XDP_HOOK_ID *HookId,
@@ -37,7 +99,6 @@ XdpCreateProgram(
 }
 
 HRESULT
-XDPAPI
 XdpInterfaceOpen(
     _In_ UINT32 InterfaceIndex,
     _Out_ HANDLE *InterfaceHandle
@@ -59,7 +120,6 @@ XdpInterfaceOpen(
 }
 
 HRESULT
-XDPAPI
 XdpRssGetCapabilities(
     _In_ HANDLE InterfaceHandle,
     _Out_opt_ XDP_RSS_CAPABILITIES *RssCapabilities,
@@ -79,7 +139,6 @@ XdpRssGetCapabilities(
 }
 
 HRESULT
-XDPAPI
 XdpRssSet(
     _In_ HANDLE InterfaceHandle,
     _In_ CONST XDP_RSS_CONFIGURATION *RssConfiguration,
@@ -99,7 +158,6 @@ XdpRssSet(
 }
 
 HRESULT
-XDPAPI
 XdpRssGet(
     _In_ HANDLE InterfaceHandle,
     _Out_opt_ XDP_RSS_CONFIGURATION *RssConfiguration,
